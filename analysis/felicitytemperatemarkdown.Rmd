@@ -1,0 +1,1288 @@
+---
+title: "Anna-Temp"
+author: "Felicity"
+date: "2026-01-12"
+output: html_document
+---
+
+```{r}
+# =============================================================================
+# SEM-CFA Analysis: Temperature Effects on Cognitive Ability
+# =============================================================================
+# Author: Felicity Simpson 
+# Date: January 2026
+# Description: Confirmatory Factor Analysis and Structural Equation Modeling
+#              examining the relationship between temperature and cognition
+# =============================================================================
+
+```
+
+```{r}
+# --- SETUP -------------------------------------------------------------------
+
+# Install packages if needed
+if (!require("lavaan")) install.packages("lavaan")
+if (!require("semPlot")) install.packages("semPlot")
+if (!require("semTools")) install.packages("semTools")
+if (!require("psych")) install.packages("psych")
+if (!require("tidyverse")) install.packages("tidyverse")
+if (!require("corrplot")) install.packages("corrplot")
+
+library(lavaan)
+library(semPlot)
+library(semTools)
+library(psych)
+library(tidyverse)
+library(corrplot)
+```
+
+```{r}
+
+# --- LOAD DATA ---------------------------------------------------------------
+setwd("C:/Users/c3371138/Dropbox/anna-temp")
+df <- read.csv("pisa-temp-revised.csv")
+
+cat("Dimensions:", nrow(df), "rows x", ncol(df), "columns\n")
+
+# Add labels to cognitive variables
+if (!require("labelled")) install.packages("labelled")
+library(labelled)
+
+var_label(df) <- list(
+  Digit.Span_Score = "Digit Span (Working Memory)",
+  Double.Trouble_Score = "Double Trouble (Executive Function)",
+  Feature.Match_Score = "Feature Match (Attention)",
+  Grammatical.Reasoning_Score = "Grammatical Reasoning (Verbal Reasoning)",
+  Monkey.Ladder_Score = "Monkey Ladder (Visuospatial Working Memory)",
+  Odd.One.Out_Score = "Odd One Out (Reasoning)",
+  Paired.Associates_Score = "Paired Associates (Episodic Memory)",
+  Polygons_Score = "Polygons (Mental Rotation)",
+  Rotations_Score = "Rotations (Spatial Ability)",
+  Spatial.Planning_Score = "Spatial Planning (Executive Function)",
+  Spatial.Span_Score = "Spatial Span (Visuospatial Memory)",
+  Token.Search_Score = "Token Search (Working Memory)"
+)
+
+# Define cognitive variables vector (using original names)
+cog_vars <- c("Digit.Span_Score", "Double.Trouble_Score", "Feature.Match_Score", 
+              "Grammatical.Reasoning_Score", "Monkey.Ladder_Score", "Odd.One.Out_Score", 
+              "Paired.Associates_Score", "Polygons_Score", "Rotations_Score", 
+              "Spatial.Planning_Score", "Spatial.Span_Score", "Token.Search_Score")
+```
+
+
+```{r}
+# --- DESCRIPTIVE STATISTICS --------------------------------------------------
+
+if (!require("kableExtra")) install.packages("kableExtra")
+library(kableExtra)
+
+# Get descriptives
+desc_stats <- describe(df[cog_vars]) %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  select(Variable, n, mean, sd, median, min, max, skew, kurtosis) %>%
+  mutate(
+    Variable = c("Digit Span", "Double Trouble", "Feature Match", 
+                 "Grammatical Reasoning", "Monkey Ladder", "Odd One Out",
+                 "Paired Associates", "Polygons", "Rotations", 
+                 "Spatial Planning", "Spatial Span", "Token Search"),
+    across(where(is.numeric), ~round(., 2))
+  )
+
+# Nice table
+desc_stats %>%
+  kbl(caption = "Descriptive Statistics: Cognitive Test Scores",
+      col.names = c("Variable", "N", "Mean", "SD", "Median", "Min", "Max", "Skew", "Kurtosis")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), 
+                full_width = FALSE) %>%
+  footnote(general = "N = 1800 total participants")
+```
+
+- Twelve cognitive tests from the Cambridge Brain Sciences battery were examined. 
+- Sample sizes ranged from 1659 (Spatial Planning) to 1784 (Grammatical Reasoning), with missingness between 0.9% and 7.8%. 
+- All distributions showed acceptable skewness (range: -0.72 to 0.50) and kurtosis (range: -0.98 to 2.84), well within recommended thresholds for structural equation modeling (|skew| < 2, |kurtosis| < 7). 
+- Five tests showed negative minimum scores (Double Trouble, Grammatical Reasoning, Odd One Out, Polygons, Rotations), consistent with penalty-based scoring systems.
+
+
+
+```{r}
+# --- DISTRIBUTION VISUALIZATIONS ---------------------------------------------
+
+# Reshape data for faceted plotting
+df_long <- df %>%
+  select(all_of(cog_vars)) %>%
+  pivot_longer(cols = everything(), names_to = "test", values_to = "score") %>%
+  mutate(test = recode(test,
+    "Digit.Span_Score" = "Digit Span",
+    "Double.Trouble_Score" = "Double Trouble",
+    "Feature.Match_Score" = "Feature Match",
+    "Grammatical.Reasoning_Score" = "Grammatical Reasoning",
+    "Monkey.Ladder_Score" = "Monkey Ladder",
+    "Odd.One.Out_Score" = "Odd One Out",
+    "Paired.Associates_Score" = "Paired Associates",
+    "Polygons_Score" = "Polygons",
+    "Rotations_Score" = "Rotations",
+    "Spatial.Planning_Score" = "Spatial Planning",
+    "Spatial.Span_Score" = "Spatial Span",
+    "Token.Search_Score" = "Token Search"
+  ))
+
+# Histogram grid
+ggplot(df_long, aes(x = score)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "steelblue", alpha = 0.7) +
+  geom_density(linewidth = 0.8, colour = "darkred") +
+  facet_wrap(~test, scales = "free", ncol = 4) +
+  labs(title = "Distribution of Cognitive Test Scores",
+       x = "Score", y = "Density") +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+
+```{r}
+# --- MISSINGNESS TABLE -------------------------------------------------------
+
+miss_table <- data.frame(
+  Variable = c("Digit Span", "Double Trouble", "Feature Match", 
+               "Grammatical Reasoning", "Monkey Ladder", "Odd One Out",
+               "Paired Associates", "Polygons", "Rotations", 
+               "Spatial Planning", "Spatial Span", "Token Search"),
+  N_complete = colSums(!is.na(df[cog_vars])),
+  N_missing = colSums(is.na(df[cog_vars]))
+) %>%
+  mutate(Pct_missing = round(N_missing / nrow(df) * 100, 1))
+
+miss_table %>%
+  kbl(caption = "Missing Data Summary",
+      col.names = c("Variable", "N Complete", "N Missing", "% Missing"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+
+#What about our covariates
+```{r}
+# --- COVARIATE DESCRIPTIVE STATISTICS ----------------------------------------
+
+# Continuous covariates
+cont_covars <- c("age", "max_temp", "min_temp")
+
+describe(df[cont_covars]) %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  select(Variable, n, mean, sd, median, min, max, skew, kurtosis) %>%
+  mutate(
+    Variable = c("Age (years)", "Max Temperature (°C)", "Min Temperature (°C)"),
+    across(where(is.numeric), ~round(., 2))
+  ) %>%
+  kbl(caption = "Descriptive Statistics: Continuous Covariates",
+      col.names = c("Variable", "N", "Mean", "SD", "Median", "Min", "Max", "Skew", "Kurtosis"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+
+# Categorical covariates
+cat("\n\nGender:\n")
+table(df$gender, useNA = "ifany")
+
+cat("\n\nAPOE Genotype:\n")
+table(df$apoe, useNA = "ifany")
+```
+
+
+```{r}
+# --- TEMPERATURE BRACKET DESCRIPTIVES ----------------------------------------
+
+# Max temperature brackets (daytime)
+max_brackets <- c("max_days_lt0", "max_days_0_5", "max_days_5_10", "max_days_10_15", 
+                  "max_days_15_20", "max_days_20_25", "max_days_25_30", "max_days_ge30")
+
+# Min temperature brackets (nighttime)
+min_brackets <- c("min_days_lt0", "min_days_0_5", "min_days_5_10", "min_days_10_15",
+                  "min_days_15_20", "min_days_20_25", "min_days_25_30", "min_days_ge30")
+
+# Descriptives for max temp brackets
+describe(df[max_brackets]) %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  select(Variable, n, mean, sd, median, min, max) %>%
+  mutate(
+    Variable = c("<0°C", "0-5°C", "5-10°C", "10-15°C", "15-20°C", "20-25°C", "25-30°C", "≥30°C"),
+    across(where(is.numeric), ~round(., 2))
+  ) %>%
+  kbl(caption = "Days in Max Temperature Brackets (30 days pre-assessment)",
+      col.names = c("Temperature Range", "N", "Mean Days", "SD", "Median", "Min", "Max"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+
+# Descriptives for min temp brackets
+describe(df[min_brackets]) %>%
+  as.data.frame() %>%
+  rownames_to_column("Variable") %>%
+  select(Variable, n, mean, sd, median, min, max) %>%
+  mutate(
+    Variable = c("<0°C", "0-5°C", "5-10°C", "10-15°C", "15-20°C", "20-25°C", "25-30°C", "≥30°C"),
+    across(where(is.numeric), ~round(., 2))
+  ) %>%
+  kbl(caption = "Days in Min Temperature Brackets (30 days pre-assessment)",
+      col.names = c("Temperature Range", "N", "Mean Days", "SD", "Median", "Min", "Max"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+
+
+```{r}
+# --- TEMPERATURE BRACKET VISUALIZATION ---------------------------------------
+
+# Summarise mean days in each bracket
+max_summary <- df %>%
+  summarise(across(all_of(max_brackets), ~mean(., na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "bracket", values_to = "mean_days") %>%
+  mutate(
+    temp_range = factor(c("<0", "0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "≥30"),
+                        levels = c("<0", "0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "≥30")),
+    type = "Max (Daytime)"
+  )
+
+min_summary <- df %>%
+  summarise(across(all_of(min_brackets), ~mean(., na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "bracket", values_to = "mean_days") %>%
+  mutate(
+    temp_range = factor(c("<0", "0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "≥30"),
+                        levels = c("<0", "0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "≥30")),
+    type = "Min (Nighttime)"
+  )
+
+temp_summary <- bind_rows(max_summary, min_summary)
+
+# Area/ridge plot showing distribution across brackets
+ggplot(temp_summary, aes(x = temp_range, y = mean_days, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("Max (Daytime)" = "firebrick", "Min (Nighttime)" = "steelblue")) +
+  labs(title = "Mean Days in Each Temperature Bracket (30 days pre-assessment)",
+       x = "Temperature Range (°C)",
+       y = "Mean Number of Days",
+       fill = "") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+
+
+```{r}
+# --- INDIVIDUAL TEMPERATURE EXPOSURE HEATMAP ---------------------------------
+
+# Prepare data for heatmap - max temperature brackets
+heatmap_data <- df %>%
+  select(PISA_ID, all_of(max_brackets)) %>%
+  mutate(
+    # Calculate total hot days (≥25°C) for sorting
+    hot_days = max_days_25_30 + max_days_ge30
+  ) %>%
+  arrange(hot_days) %>%
+  mutate(participant = row_number()) %>%
+  select(-PISA_ID, -hot_days) %>%
+  pivot_longer(cols = all_of(max_brackets), names_to = "bracket", values_to = "days") %>%
+  mutate(
+    bracket = factor(bracket,
+                     levels = max_brackets,
+                     labels = c("<0°C", "0-5°C", "5-10°C", "10-15°C", "15-20°C", "20-25°C", "25-30°C", "≥30°C"))
+  )
+
+# Heatmap
+ggplot(heatmap_data, aes(x = bracket, y = participant, fill = days)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", mid = "steelblue", high = "firebrick", 
+                       midpoint = 15, limits = c(0, 30),
+                       name = "Days") +
+  labs(title = "Individual Temperature Exposure Profiles (Max Temperature)",
+       subtitle = "Participants sorted by total hot days (≥25°C)",
+       x = "Temperature Range",
+       y = "Participant (sorted)") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+# --- NIGHTTIME TEMPERATURE HEATMAP -------------------------------------------
+
+heatmap_data_min <- df %>%
+  select(PISA_ID, all_of(min_brackets)) %>%
+  mutate(
+    # Calculate total warm nights (≥15°C) for sorting
+    warm_nights = min_days_15_20 + min_days_20_25 + min_days_25_30 + min_days_ge30
+  ) %>%
+  arrange(warm_nights) %>%
+  mutate(participant = row_number()) %>%
+  select(-PISA_ID, -warm_nights) %>%
+  pivot_longer(cols = all_of(min_brackets), names_to = "bracket", values_to = "days") %>%
+  mutate(
+    bracket = factor(bracket,
+                     levels = min_brackets,
+                     labels = c("<0°C", "0-5°C", "5-10°C", "10-15°C", "15-20°C", "20-25°C", "25-30°C", "≥30°C"))
+  )
+
+ggplot(heatmap_data_min, aes(x = bracket, y = participant, fill = days)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", mid = "steelblue", high = "firebrick",
+                       midpoint = 15, limits = c(0, 30),
+                       name = "Days") +
+  labs(title = "Individual Temperature Exposure Profiles (Min Temperature)",
+       subtitle = "Participants sorted by total warm nights (≥15°C)",
+       x = "Temperature Range",
+       y = "Participant (sorted)") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+#Exploring heterogeneity in temperature exposure
+
+Before formal modelling, I've visualised individual-level temperature exposure profiles using a heatmap of minimum (night-time) temperature exposure across predefined brackets in the 30 days prior to cognitive assessment.
+
+Participants were sorted by their total number of warm nights (≥15°C), allowing us to:
+* visually assess between-person variability in exposure patterns,
+* confirm that temperature exposure was not uniform across participants, and
+* identify whether exposure was dominated by a single temperature range or distributed across multiple brackets.
+
+The heatmap showed substantial variability across participants, with distinct exposure profiles characterised by differing distributions of warm and cool nights. This supported the decision to treat temperature exposure as a continuous, person-specific predictor in subsequent modelling rather than as a simple categorical contrast.
+
+
+
+
+```{r}
+# --- TABLE 1: SAMPLE CHARACTERISTICS -----------------------------------------
+```
+
+
+```{r}
+# Create demographics summary
+n_total <- nrow(df)
+
+# Age
+age_mean <- mean(df$age, na.rm = TRUE)
+age_sd <- sd(df$age, na.rm = TRUE)
+age_min <- min(df$age, na.rm = TRUE)
+age_max <- max(df$age, na.rm = TRUE)
+
+# Gender
+n_male <- sum(df$gender == 1, na.rm = TRUE)
+n_female <- sum(df$gender == 2, na.rm = TRUE)
+pct_male <- round(n_male / n_total * 100, 1)
+pct_female <- round(n_female / n_total * 100, 1)
+
+# APOE
+apoe_table <- table(df$apoe, useNA = "ifany")
+apoe_df <- data.frame(
+  Genotype = names(apoe_table),
+  n = as.numeric(apoe_table)
+) %>%
+  mutate(
+    Genotype = ifelse(is.na(Genotype), "Missing", Genotype),
+    pct = round(n / n_total * 100, 1)
+  )
+
+# Education/SEI if available
+sei_mean <- mean(df$SEI, na.rm = TRUE)
+sei_sd <- sd(df$SEI, na.rm = TRUE)
+sei_n <- sum(!is.na(df$SEI))
+
+# Build Table 1
+table1 <- data.frame(
+  Characteristic = c(
+    "N",
+    "Age, M (SD)",
+    "Age, range",
+    "Gender, n (%)",
+    "    Male",
+    "    Female",
+    "APOE genotype, n (%)",
+    "    ε2/ε2",
+    "    ε2/ε3",
+    "    ε2/ε4",
+    "    ε3/ε3",
+    "    ε3/ε4",
+    "    ε4/ε4",
+    "    Missing",
+    "Socioeconomic Index, M (SD)"
+  ),
+  Value = c(
+    as.character(n_total),
+    paste0(round(age_mean, 1), " (", round(age_sd, 1), ")"),
+    paste0(age_min, "–", age_max),
+    "",
+    paste0(n_male, " (", pct_male, "%)"),
+    paste0(n_female, " (", pct_female, "%)"),
+    "",
+    paste0(apoe_df$n[apoe_df$Genotype == "22"], " (", apoe_df$pct[apoe_df$Genotype == "22"], "%)"),
+    paste0(apoe_df$n[apoe_df$Genotype == "23"], " (", apoe_df$pct[apoe_df$Genotype == "23"], "%)"),
+    paste0(apoe_df$n[apoe_df$Genotype == "24"], " (", apoe_df$pct[apoe_df$Genotype == "24"], "%)"),
+    paste0(apoe_df$n[apoe_df$Genotype == "33"], " (", apoe_df$pct[apoe_df$Genotype == "33"], "%)"),
+    paste0(apoe_df$n[apoe_df$Genotype == "34"], " (", apoe_df$pct[apoe_df$Genotype == "34"], "%)"),
+    paste0(apoe_df$n[apoe_df$Genotype == "44"], " (", apoe_df$pct[apoe_df$Genotype == "44"], "%)"),
+    paste0(apoe_df$n[apoe_df$Genotype == "Missing"], " (", apoe_df$pct[apoe_df$Genotype == "Missing"], "%)"),
+    paste0(round(sei_mean, 1), " (", round(sei_sd, 1), ")")
+  )
+)
+
+table1 %>%
+  kbl(caption = "Table 1. Sample Characteristics",
+      col.names = c("Characteristic", ""),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE)
+```
+
+
+The sample comprised 1,800 community-dwelling older adults (70% female) aged 42-75 years (M = 60.9, SD = 6.7). APOE genotype distribution was consistent with population norms, with 57.5% carrying the ε3/ε3 genotype and 27.6% carrying at least one ε4 allele (ε3/ε4 or ε4/ε4). Mean socioeconomic index was 63.3 (SD = 23.7).
+
+
+
+```{r}
+# --- OUTLIER CHECK -----------------------------------------------------------
+
+# Method 1: Values > 3 SD from mean
+outlier_3sd <- data.frame(
+  Variable = c("Digit Span", "Double Trouble", "Feature Match", 
+               "Grammatical Reasoning", "Monkey Ladder", "Odd One Out",
+               "Paired Associates", "Polygons", "Rotations", 
+               "Spatial Planning", "Spatial Span", "Token Search")
+)
+
+outlier_3sd$n_low <- sapply(cog_vars, function(x) {
+  m <- mean(df[[x]], na.rm = TRUE)
+  s <- sd(df[[x]], na.rm = TRUE)
+  sum(df[[x]] < (m - 3*s), na.rm = TRUE)
+})
+
+outlier_3sd$n_high <- sapply(cog_vars, function(x) {
+  m <- mean(df[[x]], na.rm = TRUE)
+  s <- sd(df[[x]], na.rm = TRUE)
+  sum(df[[x]] > (m + 3*s), na.rm = TRUE)
+})
+
+outlier_3sd$n_total <- outlier_3sd$n_low + outlier_3sd$n_high
+outlier_3sd$pct <- round(outlier_3sd$n_total / nrow(df) * 100, 2)
+
+outlier_3sd %>%
+  kbl(caption = "Outliers: Values Beyond 3 SD from Mean",
+      col.names = c("Variable", "N Low", "N High", "N Total", "% of Sample"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+
+Univariate outliers were identified as values exceeding 3 standard deviations from the mean. The proportion of outliers was low across all cognitive tests (0-2.4% per variable). Digit Span showed the highest outlier rate (2.4%), driven primarily by low scores. No test exceeded 3% outliers, and given the large sample size, these values were retained to preserve natural variation in cognitive performance. Analyses were conducted with and without outliers as a sensitivity check.
+
+
+```{r}
+# --- PART 1: MISSING COMPLETELY AT RANDOM (MCAR) TEST ------------------------
+
+if (!require("naniar")) install.packages("naniar")
+if (!require("mice")) install.packages("mice")
+library(naniar)
+library(mice)
+
+# Little's MCAR test
+mcar_result <- mcar_test(df[cog_vars])
+mcar_result
+
+# Interpretation helper
+cat("\n--- Interpretation ---\n")
+cat("Chi-square =", round(mcar_result$statistic, 2), "\n")
+cat("df =", mcar_result$df, "\n
+")
+cat("p-value =", round(mcar_result$p.value, 4), "\n\n")
+
+if (mcar_result$p.value > 0.05) {
+  cat("Result: Non-significant (p > .05). Data are consistent with MCAR.\n")
+  cat("FIML estimation in lavaan is appropriate.\n")
+} else {
+  cat("Result: Significant (p < .05). Data may not be MCAR.\n
+")
+  cat("Consider examining missingness patterns. FIML is still robust to MAR.\n")
+}
+```
+Missing data mechanisms were examined using Little’s MCAR test, which indicated that missingness was not completely at random. Given the structure of the cognitive battery and the presence of partial task completion, this result was expected. All subsequent confirmatory factor analyses and structural equation models were estimated using full information maximum likelihood, which provides unbiased parameter estimates under the less restrictive Missing At Random assumption.
+
+
+```{r}
+# --- COMPOSITE SCORE × TEMPERATURE (both max and min) ------------------------
+
+# Create composite cognitive score
+df$cog_composite <- rowMeans(scale(df[cog_vars]), na.rm = TRUE)
+
+p1 <- ggplot(df, aes(x = max_temp, y = cog_composite)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "loess", colour = "firebrick", se = TRUE) +
+  geom_smooth(method = "lm", colour = "steelblue", linetype = "dashed", se = FALSE) +
+  labs(title = "Composite Cognition x Max Temperature",
+       x = "Max Temperature (C)", y = "Cognitive Composite (z-score)") +
+  theme_minimal()
+
+p2 <- ggplot(df, aes(x = min_temp, y = cog_composite)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "loess", colour = "firebrick", se = TRUE) +
+  geom_smooth(method = "lm", colour = "steelblue", linetype = "dashed", se = FALSE) +
+  labs(title = "Composite Cognition x Min Temperature",
+       x = "Min Temperature (C)", y = "Cognitive Composite (z-score)") +
+  theme_minimal()
+
+if (!require("patchwork")) install.packages("patchwork")
+library(patchwork)
+
+p1 + p2
+```
+
+
+Scatterplots with LOESS smoothing were used to examine potential non-linear relationships between temperature and cognitive performance. 
+
+These patterns, while subtle, suggest that the relationship between temperature and cognition may not be strictly linear and warrant further investigation using quadratic terms in the SEM.
+
+Cognitive composite: Mean of z-scored cognitive test scores per participant.
+
+
+# Correlations
+
+```{r}
+# --- COGNITIVE TEST CORRELATIONS ---------------------------------------------
+
+cor_cog <- cor(df[cog_vars], use = "pairwise.complete.obs")
+
+# Clean names for display
+colnames(cor_cog) <- c("Digit Span", "Double Trouble", "Feature Match", 
+                        "Gram Reasoning", "Monkey Ladder", "Odd One Out",
+                        "Paired Assoc", "Polygons", "Rotations", 
+                        "Spatial Plan", "Spatial Span", "Token Search")
+rownames(cor_cog) <- colnames(cor_cog)
+
+corrplot(cor_cog, method = "color", type = "lower",
+         addCoef.col = "black", number.cex = 0.7,
+         tl.col = "black", tl.cex = 0.8,
+         title = "Correlations Among Cognitive Tests",
+         mar = c(0,0,2,0))
+```
+
+All cognitive tests showed positive intercorrelations (r = 0.06 to 0.38), supporting a general cognitive ability factor. Strongest associations were observed among visuospatial tasks (Spatial Span × Monkey Ladder, r = 0.38; Feature Match × Rotations, r = 0.31). Odd One Out showed notably weak correlations with all other tests (r = 0.06-0.13), suggesting it may not load well onto a common factor and will be evaluated for exclusion in subsequent CFA models.
+
+
+
+```{r}
+# --- COGNITIVE × TEMPERATURE CORRELATIONS ------------------------------------
+
+# Correlations with max and min temp
+temp_cors <- data.frame(
+  Variable = c("Digit Span", "Double Trouble", "Feature Match", 
+               "Grammatical Reasoning", "Monkey Ladder", "Odd One Out",
+               "Paired Associates", "Polygons", "Rotations", 
+               "Spatial Planning", "Spatial Span", "Token Search")
+)
+
+# Calculate correlations and p-values for max_temp
+temp_cors$r_max <- sapply(cog_vars, function(x) cor(df[[x]], df$max_temp, use = "complete.obs"))
+temp_cors$p_max <- sapply(cog_vars, function(x) cor.test(df[[x]], df$max_temp)$p.value)
+
+# Calculate correlations and p-values for min_temp
+temp_cors$r_min <- sapply(cog_vars, function(x) cor(df[[x]], df$min_temp, use = "complete.obs"))
+temp_cors$p_min <- sapply(cog_vars, function(x) cor.test(df[[x]], df$min_temp)$p.value)
+
+temp_cors %>%
+  mutate(
+    across(starts_with("r_"), ~round(., 3)),
+    across(starts_with("p_"), ~round(., 3))
+  ) %>%
+  kbl(caption = "Correlations: Cognitive Tests × Temperature",
+      col.names = c("Cognitive Test", "r", "p", "r", "p"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "Max Temp (Day)" = 2, "Min Temp (Night)" = 2))
+```
+
+
+```{r}
+# --- COGNITIVE × AGE CORRELATIONS --------------------------------------------
+
+age_cors <- data.frame(
+  Variable = c("Digit Span", "Double Trouble", "Feature Match", 
+               "Grammatical Reasoning", "Monkey Ladder", "Odd One Out",
+               "Paired Associates", "Polygons", "Rotations", 
+               "Spatial Planning", "Spatial Span", "Token Search"),
+  r = sapply(cog_vars, function(x) cor(df[[x]], df$age, use = "complete.obs")),
+  p = sapply(cog_vars, function(x) cor.test(df[[x]], df$age)$p.value)
+) %>%
+  mutate(
+    r = round(r, 3),
+    p = round(p, 3)
+  )
+
+age_cors %>%
+  kbl(caption = "Correlations: Cognitive Tests × Age",
+      col.names = c("Cognitive Test", "r", "p"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+
+
+```{r}
+# --- COGNITIVE × GENDER ------------------------------------------------------
+
+# t-tests and effect sizes (Cohen's d)
+gender_stats <- data.frame(
+  Variable = c("Digit Span", "Double Trouble", "Feature Match", 
+               "Grammatical Reasoning", "Monkey Ladder", "Odd One Out",
+               "Paired Associates", "Polygons", "Rotations", 
+               "Spatial Planning", "Spatial Span", "Token Search")
+)
+
+# Means by gender
+gender_stats$M_male <- sapply(cog_vars, function(x) mean(df[[x]][df$gender == 1], na.rm = TRUE))
+gender_stats$M_female <- sapply(cog_vars, function(x) mean(df[[x]][df$gender == 2], na.rm = TRUE))
+
+# t-test p-values
+gender_stats$p <- sapply(cog_vars, function(x) t.test(df[[x]] ~ df$gender)$p.value)
+
+# Cohen's d
+gender_stats$d <- sapply(cog_vars, function(x) {
+  m1 <- mean(df[[x]][df$gender == 1], na.rm = TRUE)
+  m2 <- mean(df[[x]][df$gender == 2], na.rm = TRUE)
+  sd_pooled <- sqrt((sd(df[[x]][df$gender == 1], na.rm = TRUE)^2 + 
+                     sd(df[[x]][df$gender == 2], na.rm = TRUE)^2) / 2)
+  (m1 - m2) / sd_pooled
+})
+
+gender_stats %>%
+  mutate(across(where(is.numeric), ~round(., 3))) %>%
+  kbl(caption = "Cognitive Tests by Gender",
+      col.names = c("Cognitive Test", "M (Male)", "M (Female)", "p", "Cohen's d"),
+      row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  footnote(general = "Male = 1, Female = 2. Positive d = males higher.")
+```
+
+```{r}
+# --- TEMPERATURE × DEMOGRAPHICS ----------------------------------------------
+
+# Check if temperature exposure is confounded with age/gender
+cat("Temperature × Age correlations:\n")
+cat("Max temp × Age: r =", round(cor(df$max_temp, df$age, use = "complete.obs"), 3), "\n")
+cat("Min temp × Age: r =", round(cor(df$min_temp, df$age, use = "complete.obs"), 3), "\n")
+
+cat("\nTemperature by Gender:\n")
+cat("Max temp - Male M =", round(mean(df$max_temp[df$gender == 1], na.rm = TRUE), 2), 
+    ", Female M =", round(mean(df$max_temp[df$gender == 2], na.rm = TRUE), 2), "\n")
+cat("Min temp - Male M =", round(mean(df$min_temp[df$gender == 1], na.rm = TRUE), 2),
+    ", Female M =", round(mean(df$min_temp[df$gender == 2], na.rm = TRUE), 2), "\n")
+```
+Temperature: Essentially null effects across the board. Only Digit Span × Min Temp reaches significance (r = 0.07, p = .004), but that's tiny and likely spurious given multiple comparisons.
+Age: Strong, consistent negative correlations (r = -0.13 to -0.29, all p < .001) - except Odd One Out (r = -0.01, p = .58). This is another red flag for Odd One Out: it's not even picking up the robust age-cognition relationship.
+Gender: Small effects (d = -0.23 to 0.14). Females slightly better on Feature Match and Paired Associates; males slightly better on Double Trouble, Spatial Planning, Token Search
+
+
+
+
+
+#Okay let's use EFA to get a gist of the factor structure
+
+
+
+```{r}
+# --- UNCONSTRAINED EFA WITH PARALLEL ANALYSIS --------------------------------
+
+# Use the ORIGINAL variable names (before renaming)
+cog_vars <- c("Digit.Span_Score", "Double.Trouble_Score", "Feature.Match_Score", 
+              "Grammatical.Reasoning_Score", "Monkey.Ladder_Score", "Odd.One.Out_Score", 
+              "Paired.Associates_Score", "Polygons_Score", "Rotations_Score", 
+              "Spatial.Planning_Score", "Spatial.Span_Score", "Token.Search_Score")
+
+# Run parallel analysis
+fa.parallel(df[cog_vars], 
+            fm = "minres",
+            fa = "fa",
+            n.iter = 100,
+            main = "Parallel Analysis Scree Plot")
+
+# Get Kaiser criterion
+eigen_values <- eigen(cor(df[cog_vars], use = "pairwise.complete.obs"))$values
+n_factors_kaiser <- sum(eigen_values > 1)
+cat("\nKaiser criterion suggests:", n_factors_kaiser, "factors\n")
+cat("Eigenvalues:", round(eigen_values, 3), "\n")
+
+# Run EFA with number suggested by parallel analysis (or Kaiser)
+# Let's try with the Kaiser-suggested number first
+efa_result <- fa(df[cog_vars],
+                 nfactors = n_factors_kaiser,
+                 fm = "minres",
+                 rotate = "oblimin",  # Allow correlated factors
+                 scores = "regression")
+
+print(efa_result$loadings, cutoff = 0.3)
+print(efa_result)
+
+# Visualise factor structure
+fa.diagram(efa_result)
+```
+
+The scree plot helps us decide how many meaningful factors exist in our data. Here's how to read it:
+
+- The **blue line** shows the eigenvalues (a measure of explanatory power) for each factor extracted from our actual data
+- The **red dashed lines** show eigenvalues from random, meaningless data of the same size
+- **Where the blue line rises above the red lines, we have a real factor.** Where they overlap, we're just fitting noise.
+
+In our plot, the first factor has a large eigenvalue (~2.5), well above the random data threshold. Factors 2 and 3 also sit above the red lines, but just barely. By factor 4, the blue and red lines converge—telling us to stop there.
+
+**Interpretation:** The data support extracting **three factors**, though the first factor dominates. This suggests that while there may be distinct cognitive domains, a large portion of performance is shared across all tests.
+
+### What the Three Factors Represent
+
+The EFA identified three interpretable groupings:
+
+```{r}
+factor_table <- data.frame(
+  Factor = c("MR1", "MR3", "MR2"),
+  Label = c("Memory/Span", "Verbal/Executive", "Visuospatial"),
+  Key_Tests = c("Monkey Ladder, Paired Associates, Spatial Span",
+                "Grammatical Reasoning, Digit Span, Double Trouble",
+                "Rotations, Feature Match, Polygons"),
+  What_It_Captures = c("Holding and manipulating information in mind",
+                       "Language-based reasoning and cognitive control",
+                       "Mental manipulation of visual information")
+)
+
+factor_table %>%
+  kbl(col.names = c("Factor", "Label", "Key Tests", "What It Captures"),
+      caption = "Three-Factor Solution from Exploratory Factor Analysis") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+
+One test—**Odd One Out**—did not load cleanly onto any factor (all loadings < 0.15). This suggests it measures something different from the other tests, or simply has poor reliability. I have excluded it from subsequent analyses.
+
+### The Case for a General Factor (*g*)
+
+An important observation: the three factors were moderately correlated with each other (r = 0.40 to 0.59). This means someone who scores well on memory tasks also tends to score well on verbal and visuospatial tasks.
+
+This pattern is consistent with a **general cognitive ability** (often called *g*)—the idea that a single broad factor underlies performance across diverse mental tests. Our data suggest that:
+
+1. **Most variance is shared** — The dominant first factor in the scree plot reflects this general ability
+2. **But domain-specific skills also exist** — The three smaller factors capture what's unique to memory, verbal, and visuospatial tasks after accounting for *g*
+
+### Next Steps: A Hierarchical Model?
+
+Given these findings, a **bifactor model** may provide the most accurate representation of cognitive performance in this sample. In a bifactor model:
+
+- A **general factor (*g*)** accounts for what all tests share in common
+- **Domain-specific factors** capture residual variance unique to each cognitive domain
+
+This approach would allow us to ask more precise questions: Does temperature affect general cognitive ability? Or does it selectively impair specific domains like memory or processing speed? We explore this possibility in subsequent analyses.
+
+
+I will start with a normal cfa to begin with though
+
+
+
+
+# =============================================================================
+                              #Confirmatory Factor Analaysis
+# =============================================================================
+
+```{r}
+# --- CFA MODEL BASED ON EFA RESULTS ------------------------------------------
+
+# Three correlated factors (excluding Odd One Out)
+model_efa_derived <- '
+  # Factor 1: Memory/Span (MR1)
+  SpanMemory =~ Monkey.Ladder_Score + Paired.Associates_Score + 
+                Spatial.Span_Score + Token.Search_Score + Spatial.Planning_Score
+  
+  # Factor 2: Verbal/Executive (MR3)
+  VerbalExec =~ Grammatical.Reasoning_Score + Digit.Span_Score + Double.Trouble_Score
+  
+  # Factor 3: Visuospatial Processing (MR2)
+  Visuospatial =~ Rotations_Score + Feature.Match_Score + Polygons_Score
+'
+
+fit_3factor <- cfa(model_efa_derived, data = df, estimator = "MLR", missing = "fiml")
+summary(fit_3factor, fit.measures = TRUE, standardized = TRUE)
+```
+```{r}
+# --- MODIFICATION INDICES ----------------------------------------------------
+
+# Get modification indices
+mod_indices <- modificationIndices(fit_3factor, sort = TRUE, minimum.value = 5)
+
+# View top modification indices
+mod_indices %>%
+  head(20) %>%
+  kbl(caption = "Top 20 Modification Indices (MI > 5)",
+      digits = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+
+# Or just print to console
+print(mod_indices, nchar.max = 100)
+```
+
+
+I wondered whether, because of the way the tests were administered (e.g. self-administered, online) whether there was poor sensititivty, and therefore high correlation amongst the factors. So I tried a g-factor + domain specific model (bifactor)
+
+```{r}
+# --- BIFACTOR MODEL: g + domain-specific factors -----------------------------
+
+model_bifactor <- '
+  # General factor (g) loads on ALL tasks
+  g =~ Monkey.Ladder_Score + Paired.Associates_Score + Spatial.Span_Score + 
+       Token.Search_Score + Spatial.Planning_Score + Grammatical.Reasoning_Score + 
+       Digit.Span_Score + Double.Trouble_Score + Rotations_Score + 
+       Feature.Match_Score + Polygons_Score
+  
+  # Domain-specific factors (residual variance after accounting for g)
+  SpanMemory =~ Monkey.Ladder_Score + Paired.Associates_Score + 
+                Spatial.Span_Score + Token.Search_Score + Spatial.Planning_Score
+  
+  VerbalExec =~ Grammatical.Reasoning_Score + Digit.Span_Score + Double.Trouble_Score
+  
+  Visuospatial =~ Rotations_Score + Feature.Match_Score + Polygons_Score
+  
+  # Bifactor constraints: g is orthogonal to specific factors
+  g ~~ 0*SpanMemory
+  g ~~ 0*VerbalExec
+  g ~~ 0*Visuospatial
+  
+  # Specific factors are orthogonal to each other
+  SpanMemory ~~ 0*VerbalExec
+  SpanMemory ~~ 0*Visuospatial
+  VerbalExec ~~ 0*Visuospatial
+'
+
+fit_bifactor <- cfa(model_bifactor, data = df, estimator = "MLR", missing = "fiml")
+summary(fit_bifactor, fit.measures = TRUE, standardized = TRUE)
+```
+
+
+```{r}
+# --- MODEL COMPARISON --------------------------------------------------------
+
+# Fit indices comparison
+compare_fits <- data.frame(
+  Model = c("Three Correlated Factors", "Bifactor (g + specific)"),
+  CFI = c(fitMeasures(fit_3factor, "cfi"), fitMeasures(fit_bifactor, "cfi")),
+  TLI = c(fitMeasures(fit_3factor, "tli"), fitMeasures(fit_bifactor, "tli")),
+  RMSEA = c(fitMeasures(fit_3factor, "rmsea"), fitMeasures(fit_bifactor, "rmsea")),
+  SRMR = c(fitMeasures(fit_3factor, "srmr"), fitMeasures(fit_bifactor, "srmr")),
+  AIC = c(fitMeasures(fit_3factor, "aic"), fitMeasures(fit_bifactor, "aic")),
+  BIC = c(fitMeasures(fit_3factor, "bic"), fitMeasures(fit_bifactor, "bic"))
+) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+compare_fits %>%
+  kbl(caption = "Model Fit Comparison: Three-Factor vs Bifactor") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+
+Bifactor model not super convincing 
+Let's go back to the original model and try 2 things
+Cross-load spatial planning so it's on both 1) memory and 2) visuospatial
+This is also what Hampshire did
+
+Then let's explore adding 'Odd one out' once this crossloading is accounted for
+
+```{r}
+# --- CFA: 3 factors + cross-loading Spatial Planning -------------------------
+
+model_3factor_crossSP <- '
+  # Factor 1: Memory/Span
+  SpanMemory =~ Monkey.Ladder_Score + Paired.Associates_Score + 
+                Spatial.Span_Score + Token.Search_Score +
+                Spatial.Planning_Score
+
+  # Factor 2: Verbal/Executive
+  VerbalExec =~ Grammatical.Reasoning_Score + Digit.Span_Score + Double.Trouble_Score
+
+  # Factor 3: Visuospatial
+  Visuospatial =~ Rotations_Score + Feature.Match_Score + Polygons_Score +
+                  Spatial.Planning_Score
+'
+
+fit_3factor_crossSP <- cfa(
+  model_3factor_crossSP, data = df, estimator = "MLR", missing = "fiml"
+)
+
+summary(fit_3factor_crossSP, fit.measures = TRUE, standardized = TRUE)
+
+```
+
+
+
+```{r}
+library(dplyr)
+
+compare_fits_1 <- data.frame(
+  Model = c("3-factor (no cross-load)", "3-factor + Spatial Planning cross-load"),
+  CFI   = c(fitMeasures(fit_3factor, "cfi"),  fitMeasures(fit_3factor_crossSP, "cfi")),
+  TLI   = c(fitMeasures(fit_3factor, "tli"),  fitMeasures(fit_3factor_crossSP, "tli")),
+  RMSEA = c(fitMeasures(fit_3factor, "rmsea"),fitMeasures(fit_3factor_crossSP, "rmsea")),
+  SRMR  = c(fitMeasures(fit_3factor, "srmr"), fitMeasures(fit_3factor_crossSP, "srmr")),
+  AIC   = c(fitMeasures(fit_3factor, "aic"),  fitMeasures(fit_3factor_crossSP, "aic")),
+  BIC   = c(fitMeasures(fit_3factor, "bic"),  fitMeasures(fit_3factor_crossSP, "bic"))
+) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+compare_fits_1
+
+
+```
+
+Allowing Spatial Planning to load on both the memory/span and visuospatial factors significantly improved model fit, consistent with the dual working memory and spatial demands of this task.
+
+
+```{r}
+# --- CFA: cross-load Spatial Planning + add Odd One Out (single loading) -----
+
+model_crossSP_addOdd_vis <- '
+  SpanMemory =~ Monkey.Ladder_Score + Paired.Associates_Score + 
+                Spatial.Span_Score + Token.Search_Score + Spatial.Planning_Score
+
+  VerbalExec =~ Grammatical.Reasoning_Score + Digit.Span_Score + Double.Trouble_Score
+
+  Visuospatial =~ Rotations_Score + Feature.Match_Score + Polygons_Score +
+                  Spatial.Planning_Score + Odd.One.Out_Score
+'
+
+fit_crossSP_addOdd_vis <- cfa(
+  model_crossSP_addOdd_vis, data = df, estimator = "MLR", missing = "fiml"
+)
+
+summary(fit_crossSP_addOdd_vis, fit.measures = TRUE, standardized = TRUE)
+
+```
+
+
+```{r}
+library(dplyr)
+
+compare_fits_2 <- data.frame(
+  Model = c("Cross-load SP only", "Cross-load SP + Odd One Out"),
+  CFI   = c(fitMeasures(fit_3factor_crossSP, "cfi"),  fitMeasures(fit_crossSP_addOdd_vis, "cfi")),
+  TLI   = c(fitMeasures(fit_3factor_crossSP, "tli"),  fitMeasures(fit_crossSP_addOdd_vis, "tli")),
+  RMSEA = c(fitMeasures(fit_3factor_crossSP, "rmsea"),fitMeasures(fit_crossSP_addOdd_vis, "rmsea")),
+  SRMR  = c(fitMeasures(fit_3factor_crossSP, "srmr"), fitMeasures(fit_crossSP_addOdd_vis, "srmr")),
+  AIC   = c(fitMeasures(fit_3factor_crossSP, "aic"),  fitMeasures(fit_crossSP_addOdd_vis, "aic")),
+  BIC   = c(fitMeasures(fit_3factor_crossSP, "bic"),  fitMeasures(fit_crossSP_addOdd_vis, "bic"))
+) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+compare_fits_2
+
+```
+
+
+Okay odd one out is definitely not great for the whole model we are going leave it out
+
+
+Exploratory analyses indicated that the Odd One Out task showed weak associations with other cognitive measures and did not load cleanly onto any factor. In confirmatory factor analyses, inclusion of Odd One Out resulted in negligible standardized loadings (< .20) and substantially worsened information criteria, without improving overall model fit. Accordingly, Odd One Out was excluded from the final measurement model.
+
+
+
+#final model
+
+this is a repeat of the one we had before but just adding a figure + modification indices
+
+```{r}
+# --- CFA: 3 factors + cross-loading Spatial Planning -------------------------
+
+model_3factor_crossSP <- '
+  # Factor 1: Memory/Span
+  SpanMemory =~ Monkey.Ladder_Score + Paired.Associates_Score + 
+                Spatial.Span_Score + Token.Search_Score +
+                Spatial.Planning_Score
+
+  # Factor 2: Verbal/Executive
+  VerbalExec =~ Grammatical.Reasoning_Score + Digit.Span_Score + Double.Trouble_Score
+
+  # Factor 3: Visuospatial
+  Visuospatial =~ Rotations_Score + Feature.Match_Score + Polygons_Score +
+                  Spatial.Planning_Score
+'
+
+fit_3factor_crossSP <- cfa(
+  model_3factor_crossSP, data = df, estimator = "MLR", missing = "fiml"
+)
+
+summary(fit_3factor_crossSP, fit.measures = TRUE, standardized = TRUE)
+
+```
+
+
+```{r}
+# Modification indices
+mod_indices <- modificationIndices(
+  fit_3factor_crossSP,
+  sort = TRUE
+)
+
+# Keep only meaningful ones
+mod_indices_clean <- mod_indices %>%
+  filter(mi >= 10) %>%                 # sensible threshold
+  arrange(desc(mi))
+
+head(mod_indices_clean, 20)
+
+```
+```{r}
+library(semPlot)
+
+semPaths(
+  fit_3factor_crossSP,
+  what = "std",              # standardized loadings
+  whatLabels = "std",
+  style = "lisrel",
+  layout = "tree",
+  rotation = 2,
+  residuals = FALSE,         # hide residual arrows
+  intercepts = FALSE,
+  nCharNodes = 0,
+  sizeLat = 9,
+  sizeMan = 13,
+  edge.label.cex = 0.8,
+  curvePivot = TRUE
+)
+
+```
+
+
+
+
+
+# =============================================================================
+                              Full-scale SEM using theoretical model
+# =============================================================================
+
+
+
+```{r}
+library(dplyr)
+library(lavaan)
+
+# One-time rename to short task names (run once)
+df <- df %>%
+  rename(
+    spatial_span   = Spatial.Span_Score,
+    paired_assoc   = Paired.Associates_Score,
+    monkey_ladder  = Monkey.Ladder_Score,
+    token_search   = Token.Search_Score,
+    spatial_plan   = Spatial.Planning_Score,
+    rotations      = Rotations_Score,
+    feature_match  = Feature.Match_Score,
+    polygons       = Polygons_Score,
+    digit_span     = Digit.Span_Score,
+    double_trouble = Double.Trouble_Score,
+    gram_reason    = Grammatical.Reasoning_Score
+  )
+
+# One-time centring and derived terms (run once)
+df <- df %>%
+  mutate(
+    age_c = age - mean(age, na.rm = TRUE),
+
+    max_temp_c  = max_temp - mean(max_temp, na.rm = TRUE),
+    min_temp_c  = min_temp - mean(min_temp, na.rm = TRUE),
+
+    max_temp_c2 = max_temp_c^2,
+    min_temp_c2 = min_temp_c^2,
+
+    ageXmax = age_c * max_temp_c,
+    ageXmin = age_c * min_temp_c
+  )
+
+```
+
+
+
+```{r}
+measurement_model <- '
+  SpanMemory =~ monkey_ladder + paired_assoc + spatial_span + token_search + spatial_plan
+  Visuospatial =~ rotations + feature_match + polygons + spatial_plan
+  VerbalExec =~ gram_reason + digit_span + double_trouble
+'
+
+```
+
+
+
+
+
+```{r}
+fit_sem <- function(structural_predictors, label) {
+  model <- paste0(
+    measurement_model,
+    "\n\n",
+    "SpanMemory   ~ ", structural_predictors, "\n",
+    "Visuospatial ~ ", structural_predictors, "\n",
+    "VerbalExec   ~ ", structural_predictors, "\n"
+  )
+
+  fit <- sem(
+    model,
+    data = df,
+    estimator = "MLR",
+    missing = "fiml",
+    std.lv = TRUE
+  )
+
+  cat("\n\n============================\n")
+  cat("MODEL:", label, "\n")
+  cat("============================\n")
+  print(fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr", "aic", "bic")))
+  cat("\nStandardised regressions:\n")
+  pe <- parameterEstimates(fit, standardized = TRUE)
+  print(subset(pe, op == "~" & lhs %in% c("SpanMemory","Visuospatial","VerbalExec"),
+               select = c(lhs, op, rhs, est, se, z, pvalue, std.all)))
+  invisible(fit)
+}
+
+```
+
+
+#4.1 covariates only
+
+```{r}
+fit_cov_only <- fit_sem(
+  structural_predictors = "age_c + gender",
+  label = "Covariates only"
+)
+
+```
+
+
+MAX temperature models
+```{r}
+#A) Linear (max)
+fit_max_linear <- fit_sem(
+  structural_predictors = "age_c + gender + max_temp_c",
+  label = "MAX temp linear"
+)
+
+#B) Quadratic (max)
+fit_max_quad <- fit_sem(
+  structural_predictors = "age_c + gender + max_temp_c + max_temp_c2",
+  label = "MAX temp quadratic"
+)
+
+#C) Age × temperature interaction (max)
+fit_max_int <- fit_sem(
+  structural_predictors = "age_c + gender + max_temp_c + ageXmax",
+  label = "MAX temp age interaction"
+)
+```
+#Maximum daytime temperature and cognition
+
+Across all models, age showed strong, consistent negative associations with all three cognitive domains (standardised β ≈ −0.40 to −0.48, all p < .001). Gender effects were small, with females performing slightly better on Span/Memory and Verbal/Executive domains, and no gender differences for Visuospatial ability.
+
+Linear effects
+
+In the linear model, maximum daytime temperature was not associated with cognitive performance in any domain (all |β| < 0.04, all p > .24).
+
+Quadratic effects
+
+Adding a quadratic term provided weak evidence for non-linearity in the Span/Memory domain only. The quadratic maximum temperature term was statistically significant (β = −0.05, p = .046), indicating a very small inverted-U pattern. No quadratic effects were observed for Visuospatial or Verbal/Executive cognition (all p > .78).
+
+Age × temperature interactions
+
+There was no evidence that age moderated the association between maximum temperature and cognition. All age × temperature interaction terms were small and non-significant across domains (all |β| ≤ 0.05, all p ≥ .08).
+
+Overall, maximum daytime temperature showed no robust linear or interactive associations with cognitive performance, and the small quadratic effect observed for Span/Memory was of minimal magnitude.
+
+
+
+MIN temperature models
+```{r}
+#A) Linear (min)
+fit_min_linear <- fit_sem(
+  structural_predictors = "age_c + gender + min_temp_c",
+  label = "MIN temp linear"
+)
+
+#B) Quadratic (min)
+fit_min_quad <- fit_sem(
+  structural_predictors = "age_c + gender + min_temp_c + min_temp_c2",
+  label = "MIN temp quadratic"
+)
+
+#C) Age × temperature interaction (min)
+fit_min_int <- fit_sem(
+  structural_predictors = "age_c + gender + min_temp_c + ageXmin",
+  label = "MIN temp age interaction"
+)
+```
+
+#Minimum nighttime temperature and cognition
+
+As in the maximum temperature models, age showed strong and consistent negative associations with all three cognitive domains (standardised β ≈ −0.40 to −0.48, all p < .001). Gender effects were small, with females performing slightly better on Span/Memory and Verbal/Executive domains, and no gender differences for Visuospatial ability.
+
+Linear effects
+
+In the linear model, minimum nighttime temperature was not associated with cognitive performance in any domain (all |β| ≤ 0.04, all p ≥ .18).
+
+Quadratic effects
+
+Including a quadratic term provided no evidence of non-linear associations between minimum temperature and cognition. Neither linear nor quadratic temperature terms were significant for any domain (all p ≥ .63).
+
+Age × temperature interactions
+
+There was no evidence that age moderated the association between minimum nighttime temperature and cognition. All age × temperature interaction terms were small and non-significant across domains (all |β| ≤ 0.02, all p ≥ .63).
+
+Overall, minimum nighttime temperature showed no detectable linear, non-linear, or age-dependent associations with cognitive performance.
+
+
+```{r}
+compare_models <- function(...) {
+  fits <- list(...)
+  data.frame(
+    Model = names(fits),
+    CFI   = sapply(fits, fitMeasures, "cfi"),
+    TLI   = sapply(fits, fitMeasures, "tli"),
+    RMSEA = sapply(fits, fitMeasures, "rmsea"),
+    SRMR  = sapply(fits, fitMeasures, "srmr"),
+    AIC   = sapply(fits, fitMeasures, "aic"),
+    BIC   = sapply(fits, fitMeasures, "bic")
+  ) %>%
+    mutate(across(where(is.numeric), ~round(.x, 3)))
+}
+
+compare_models(
+  cov_only   = fit_cov_only,
+  max_linear = fit_max_linear,
+  max_quad   = fit_max_quad,
+  max_int    = fit_max_int
+)
+
+compare_models(
+  cov_only   = fit_cov_only,
+  min_linear = fit_min_linear,
+  min_quad   = fit_min_quad,
+  min_int    = fit_min_int
+)
+
+```
+
+
